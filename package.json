@@ -1,0 +1,15 @@
+{
+  "name": "chamados-wpp",
+  "version": "0.1.0",
+  "description": "Lê o WhatsApp do suporte e contabiliza chamados e tempo de atendimento",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": { "start": "node src/index.js" },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@whiskeysockets/baileys": "latest",
+    "dotenv": "^16.4.5",
+    "pino": "^9.5.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
