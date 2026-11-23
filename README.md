@@ -17,6 +17,9 @@ Do seu WhatsApp pessoal (`RELATORIO_PARA`), mande para o número do suporte, ou 
 | `/relatorio` | dia 20 do mês passado até hoje |
 | `/relatorio 20/10 19/11` | período escolhido (ano atual) |
 | `/relatorio 20/10/2026 19/11/2026` | com ano |
+| `/relatorio outubro` / `/relatorio março 2026` | mês inteiro |
+| `/relatorio mes` / `/relatorio mes passado` | mês atual / anterior |
+| `/relatorio semana` / `hoje` / `ontem` | últimos 7 dias / hoje / ontem |
 
 O bot manda o resumo e a planilha (.xlsx) no seu pessoal. As mensagens entre o pessoal e o suporte não contam como chamado.
 

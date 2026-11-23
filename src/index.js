@@ -159,17 +159,45 @@ async function jidPessoal() {
   return jidPessoalCache || `${RELATORIO_PARA}@s.whatsapp.net`;
 }
 
+// Interpreta o período do comando /relatorio. Exemplos:
+//   (vazio) -> dia 20 do mês passado até hoje      hoje | ontem
+//   semana  -> últimos 7 dias                       mes | mês -> mês atual
+//   mes passado                                     outubro | outubro 2025
+//   20/10   -> de 20/10 até hoje                    20/10 19/11 | 20/10 a 19/11 | 20/10/2026 até 19/11/2026
+const MESES = ['janeiro', 'fevereiro', 'marco', 'abril', 'maio', 'junho', 'julho', 'agosto',
+  'setembro', 'outubro', 'novembro', 'dezembro'];
 function periodo(args) {
   const hoje = new Date();
   const ano = hoje.getFullYear();
-  const parse = (s) => {
-    const [d, m, a] = s.split('/').map(Number);
-    return `${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}/${a ? (a < 100 ? 2000 + a : a) : ano}`;
-  };
-  const fmtD = (d) => d.toLocaleDateString('pt-BR');
-  if (args.length >= 2) return [parse(args[0]), parse(args[1])];
-  if (args.length === 1) return [parse(args[0]), fmtD(hoje)];
-  return [fmtD(new Date(ano, hoje.getMonth() - 1, 20)), fmtD(hoje)];
+  const f = (d) => d.toLocaleDateString('pt-BR');
+  const dia = (a, m, d) => new Date(a, m, d);
+  const txt = args.join(' ').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+
+  const datas = txt.match(/\d{1,2}\/\d{1,2}(?:\/\d{2,4})?/g) || [];
+  if (datas.length) {
+    const parse = (x) => {
+      const [d, m, a] = x.split('/').map(Number);
+      return dia(a ? (a < 100 ? 2000 + a : a) : ano, m - 1, d);
+    };
+    let de = parse(datas[0]);
+    const ate = datas[1] ? parse(datas[1]) : hoje;
+    if (!datas[0].split('/')[2] && de > ate) de = dia(de.getFullYear() - 1, de.getMonth(), de.getDate());
+    return [f(de), f(ate)];
+  }
+  if (!txt) return [f(dia(ano, hoje.getMonth() - 1, 20)), f(hoje)];
+  if (txt === 'hoje') return [f(hoje), f(hoje)];
+  if (txt === 'ontem') { const o = dia(ano, hoje.getMonth(), hoje.getDate() - 1); return [f(o), f(o)]; }
+  if (txt === 'semana') return [f(dia(ano, hoje.getMonth(), hoje.getDate() - 6)), f(hoje)];
+  if (txt === 'mes') return [f(dia(ano, hoje.getMonth(), 1)), f(hoje)];
+  if (txt === 'mes passado') return [f(dia(ano, hoje.getMonth() - 1, 1)), f(dia(ano, hoje.getMonth(), 0))];
+  const im = MESES.findIndex((m) => txt.startsWith(m));
+  if (im >= 0) {
+    const aInf = Number((txt.match(/\d{4}/) || [])[0]);
+    const a = aInf || (im > hoje.getMonth() ? ano - 1 : ano);
+    const ultimo = dia(a, im + 1, 0);
+    return [f(dia(a, im, 1)), f(ultimo > hoje ? hoje : ultimo)];
+  }
+  return null;
 }
 
 function gerarRelatorio(de, ate) {
@@ -185,7 +213,12 @@ async function tratarComando(m) {
   const texto = (textoDe(m) || '').trim();
   if (!texto.toLowerCase().startsWith('/relatorio')) return;
   const destino = RELATORIO_PARA ? await jidPessoal() : m.key.remoteJid;
-  const [de, ate] = periodo(texto.split(/\s+/).slice(1));
+  const p = periodo(texto.split(/\s+/).slice(1));
+  if (!p) {
+    await sock.sendMessage(destino, { text: 'Não entendi o período. Exemplos:\n/relatorio\n/relatorio 20/10 a 19/11\n/relatorio outubro\n/relatorio mes passado\n/relatorio semana\n/relatorio hoje' });
+    return;
+  }
+  const [de, ate] = p;
   console.log(`[relatório] pedido ${de} a ${ate}`);
   try {
     const { saida, resumo } = await gerarRelatorio(de, ate);
