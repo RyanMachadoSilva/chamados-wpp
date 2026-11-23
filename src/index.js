@@ -202,15 +202,26 @@ async function tratarComando(m) {
 }
 
 // ---------- conexão ----------
+// 1º tenta como "Desktop" (recebe mais histórico); se cair 3x seguidas sem conectar,
+// usa a mesma identificação do assistente-wpp, que já funciona nesta VPS.
+const NAVEGADORES = [
+  ['desktop', () => (Browsers?.macOS ? Browsers.macOS('Desktop') : ['Mac OS', 'Desktop', '14.4.1'])],
+  ['chrome', () => ['Chamados', 'Chrome', '1.0']],
+];
+let idxNavegador = process.env.NAVEGADOR === 'chrome' ? 1 : 0;
+let falhasSeguidas = 0;
+let jaConectou = false;
+
 async function conectar() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const { version } = await fetchLatestBaileysVersion().catch(() => ({ version: undefined }));
+  console.log(`Conectando (modo ${NAVEGADORES[idxNavegador][0]}, versão WA ${version?.join('.') ?? 'padrão'})...`);
 
   sock = makeWASocket({
     version,
     auth: state,
     logger: pino({ level: 'silent' }),
-    browser: Browsers?.macOS ? Browsers.macOS('Desktop') : ['Mac OS', 'Desktop', '14.4.1'],
+    browser: NAVEGADORES[idxNavegador][1](),
     syncFullHistory: true,               // pede o histórico completo ao parear
     shouldSyncHistoryMessage: () => true,
     markOnlineOnConnect: false,          // não aparece "online" para os clientes
@@ -224,6 +235,8 @@ async function conectar() {
       qrcode.generate(qr, { small: true });
     }
     if (connection === 'open') {
+      jaConectou = true;
+      falhasSeguidas = 0;
       console.log('✅ Conectado. Recebendo o histórico (pode levar alguns minutos)...');
       if (RELATORIO_PARA) jidPessoal().then((j) => console.log(`Relatórios vão para ${j}`));
       else console.log('RELATORIO_PARA não definido: relatórios vão para a conversa consigo mesmo.');
@@ -234,7 +247,13 @@ async function conectar() {
         console.log('❌ Sessão encerrada no celular. Rode: docker compose down -v && docker compose up -d (gera outro QR; apaga as mensagens salvas).');
         process.exit(1);
       }
-      console.log('Conexão caiu, reconectando em 5s...');
+      const motivo = lastDisconnect?.error?.message || '?';
+      console.log(`Conexão caiu (código ${codigo ?? '?'}: ${motivo}) [modo ${NAVEGADORES[idxNavegador][0]}], reconectando em 5s...`);
+      if (!jaConectou && ++falhasSeguidas >= 3 && idxNavegador === 0) {
+        idxNavegador = 1;
+        falhasSeguidas = 0;
+        console.log('Trocando para o modo chrome (igual ao assistente).');
+      }
       setTimeout(conectar, 5000);
     }
   });
