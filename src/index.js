@@ -6,8 +6,9 @@
 // - Na conversa "Você" (mensagem para si mesmo) do número de suporte, mande:
 //       /relatorio                 -> do dia 20 do mês passado até hoje
 //       /relatorio 20/10 19/11     -> período escolhido (ano atual se omitido)
-//   e o bot responde ali mesmo com o resumo e a planilha.
-// O bot NUNCA responde clientes: só escreve na conversa consigo mesmo.
+//   O comando também pode ser mandado do número pessoal (RELATORIO_PARA) para o suporte.
+//   O resumo e a planilha vão para o número pessoal (ou para a própria conversa, se não configurado).
+// O bot NUNCA responde clientes: só escreve para o número pessoal ou na conversa consigo mesmo.
 import 'dotenv/config';
 import * as baileys from '@whiskeysockets/baileys';
 import pino from 'pino';
@@ -31,6 +32,7 @@ const NOME_ATENDENTE = process.env.NOME_ATENDENTE || 'Suporte';
 const GUARDAR_DESDE = process.env.GUARDAR_DESDE || ''; // dd/mm/aaaa opcional
 const PAUSA_MIN = process.env.PAUSA_MIN || '30';
 const NOVO_HORAS = process.env.NOVO_HORAS || '4';
+const RELATORIO_PARA = (process.env.RELATORIO_PARA || '').replace(/\D/g, ''); // ex.: 5534999999999
 
 fs.mkdirSync(CONVERSAS_DIR, { recursive: true });
 fs.mkdirSync(RELATORIOS_DIR, { recursive: true });
@@ -80,7 +82,7 @@ const buffer = [];
 
 function guardar(m) {
   const jid = m.key?.remoteJid;
-  if (!individual(jid) || ehMinhaConversa(jid)) return;
+  if (!individual(jid) || ehMinhaConversa(jid) || ehPessoal(m)) return;
   const ts = Number(m.messageTimestamp || 0);
   if (!ts || ts < limiteInicio) return;
   const texto = textoDe(m);
@@ -130,6 +132,33 @@ function ehMinhaConversa(jid) {
   return meus.includes(numero(jid));
 }
 
+// número pessoal: aceita com e sem o 9 extra (contas antigas do Brasil não têm o 9 no WhatsApp)
+const variantes = (n) => {
+  const v = new Set([n]);
+  if (/^55\d{2}9\d{8}$/.test(n)) v.add(n.slice(0, 4) + n.slice(5));
+  if (/^55\d{2}\d{8}$/.test(n)) v.add(n.slice(0, 4) + '9' + n.slice(4));
+  return v;
+};
+const NUMEROS_PESSOAL = RELATORIO_PARA ? variantes(RELATORIO_PARA) : new Set();
+let lidPessoal = null;
+function ehPessoal(m) {
+  if (!NUMEROS_PESSOAL.size) return false;
+  const k = m.key || {};
+  return [k.remoteJid, k.remoteJidAlt, k.senderPn, k.participant, k.participantAlt]
+    .filter(Boolean).some((j) => NUMEROS_PESSOAL.has(numero(j)) || (lidPessoal && j === lidPessoal));
+}
+
+let jidPessoalCache = null;
+async function jidPessoal() {
+  if (jidPessoalCache) return jidPessoalCache;
+  try {
+    const [r] = await sock.onWhatsApp(RELATORIO_PARA);
+    if (r?.exists && r.jid) jidPessoalCache = r.jid;
+    if (r?.lid) lidPessoal = r.lid;
+  } catch {}
+  return jidPessoalCache || `${RELATORIO_PARA}@s.whatsapp.net`;
+}
+
 function periodo(args) {
   const hoje = new Date();
   const ano = hoje.getFullYear();
@@ -155,7 +184,7 @@ function gerarRelatorio(de, ate) {
 async function tratarComando(m) {
   const texto = (textoDe(m) || '').trim();
   if (!texto.toLowerCase().startsWith('/relatorio')) return;
-  const destino = m.key.remoteJid;
+  const destino = RELATORIO_PARA ? await jidPessoal() : m.key.remoteJid;
   const [de, ate] = periodo(texto.split(/\s+/).slice(1));
   console.log(`[relatório] pedido ${de} a ${ate}`);
   try {
@@ -194,7 +223,11 @@ async function conectar() {
       console.log('\nEscaneie no celular DO SUPORTE: Configurações > Aparelhos conectados > Conectar aparelho\n');
       qrcode.generate(qr, { small: true });
     }
-    if (connection === 'open') console.log('✅ Conectado. Recebendo o histórico (pode levar alguns minutos)...');
+    if (connection === 'open') {
+      console.log('✅ Conectado. Recebendo o histórico (pode levar alguns minutos)...');
+      if (RELATORIO_PARA) jidPessoal().then((j) => console.log(`Relatórios vão para ${j}`));
+      else console.log('RELATORIO_PARA não definido: relatórios vão para a conversa consigo mesmo.');
+    }
     if (connection === 'close') {
       const codigo = lastDisconnect?.error?.output?.statusCode;
       if (codigo === DisconnectReason.loggedOut) {
@@ -223,6 +256,13 @@ async function conectar() {
       if (ehMinhaConversa(m.key?.remoteJid)) {
         const recente = Date.now() - Number(m.messageTimestamp || 0) * 1000 < 2 * 60_000;
         if (m.key.fromMe && recente && (type === 'notify' || type === 'append')) {
+          await tratarComando(m).catch((e) => console.error('[erro]', e));
+        }
+        continue;
+      }
+      if (ehPessoal(m)) {
+        const recente = Date.now() - Number(m.messageTimestamp || 0) * 1000 < 2 * 60_000;
+        if (!m.key.fromMe && recente && type === 'notify') {
           await tratarComando(m).catch((e) => console.error('[erro]', e));
         }
         continue;

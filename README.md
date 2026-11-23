@@ -6,11 +6,11 @@ Bot que conecta no WhatsApp do suporte (só leitura), guarda as conversas indivi
 
 - Ao parear pelo QR code, o celular manda o histórico das conversas e o bot grava tudo.
 - Depois ele continua gravando as mensagens novas, 24h.
-- **Ele nunca responde clientes.** Só escreve na conversa "Você" (mensagem para si mesmo) do número de suporte.
+- **Ele nunca responde clientes.** Só escreve para o número pessoal configurado em `RELATORIO_PARA` (ou na conversa "Você" do suporte, se não configurado).
 
 ## Pedir o relatório
 
-No WhatsApp do suporte, abra a conversa com você mesmo e mande:
+Do seu WhatsApp pessoal (`RELATORIO_PARA`), mande para o número do suporte, ou mande na conversa "Você" do próprio suporte:
 
 | Mensagem | Período |
 |---|---|
@@ -18,7 +18,7 @@ No WhatsApp do suporte, abra a conversa com você mesmo e mande:
 | `/relatorio 20/10 19/11` | período escolhido (ano atual) |
 | `/relatorio 20/10/2026 19/11/2026` | com ano |
 
-O bot responde com o resumo e a planilha (.xlsx).
+O bot manda o resumo e a planilha (.xlsx) no seu pessoal. As mensagens entre o pessoal e o suporte não contam como chamado.
 
 ## Regras da contagem
 
@@ -32,6 +32,7 @@ O bot responde com o resumo e a planilha (.xlsx).
 ```bash
 cd ~ && git clone https://github.com/RyanMachadoSilva/chamados-wpp.git
 cd chamados-wpp
+cp .env.example .env && nano .env      # coloque o seu número pessoal em RELATORIO_PARA
 docker compose up -d --build && docker compose logs -f
 ```
 Escaneie o QR com o celular **do número de suporte**. Quando aparecer `✅ Conectado`, acompanhe as linhas `[histórico]` e depois saia com Ctrl+C (o bot continua rodando).
