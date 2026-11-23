@@ -27,7 +27,9 @@ const DATA_DIR = process.env.DATA_DIR || 'estado/data';
 const CONVERSAS_DIR = path.join(DATA_DIR, 'conversas');
 const RELATORIOS_DIR = path.join(DATA_DIR, 'relatorios');
 const ARQ_MSGS = path.join(DATA_DIR, 'mensagens.jsonl');
-const ARQ_NOMES = path.join(DATA_DIR, 'nomes.json');
+const ARQ_NOMES = path.join(DATA_DIR, 'nomes.json');       // legado
+const ARQ_CONTATOS = path.join(DATA_DIR, 'contatos.json');
+const ARQ_ETIQUETAS = path.join(DATA_DIR, 'etiquetas.json');
 const NOME_ATENDENTE = process.env.NOME_ATENDENTE || 'Suporte';
 const GUARDAR_DESDE = process.env.GUARDAR_DESDE || ''; // dd/mm/aaaa opcional
 const PAUSA_MIN = process.env.PAUSA_MIN || '30';
@@ -39,8 +41,40 @@ fs.mkdirSync(RELATORIOS_DIR, { recursive: true });
 
 // ---------- armazenamento ----------
 const conversas = new Map(); // jid -> Map(id -> {ts, fromMe, texto})
-let nomes = {};
-try { nomes = JSON.parse(fs.readFileSync(ARQ_NOMES, 'utf8')); } catch {}
+// contatos[jid] = { agenda, wpp, empresa, pn, etiquetas: [ids] }
+let contatos = {};
+let etiquetas = {}; // id -> nome
+try { contatos = JSON.parse(fs.readFileSync(ARQ_CONTATOS, 'utf8')); } catch {}
+try { etiquetas = JSON.parse(fs.readFileSync(ARQ_ETIQUETAS, 'utf8')); } catch {}
+try { // migra nomes.json antigo
+  for (const [jid, n] of Object.entries(JSON.parse(fs.readFileSync(ARQ_NOMES, 'utf8')))) {
+    contatos[jid] ||= {};
+    contatos[jid].antigo ||= n;
+  }
+} catch {}
+const ct = (jid) => (contatos[jid] ||= {});
+const soNumero = (jid) => String(jid || '').split('@')[0].split(':')[0];
+function definir(jid, campo, valor) {
+  if (!jid || !valor || ct(jid)[campo] === valor) return;
+  ct(jid)[campo] = valor;
+  pendenteGravar = true;
+}
+// liga um @lid ao telefone real (e vice-versa)
+function ligarPn(jid, outro) {
+  if (!jid || !outro || jid === outro) return;
+  if (outro.endsWith('@s.whatsapp.net')) definir(jid, 'pn', soNumero(outro));
+  if (jid.endsWith('@s.whatsapp.net') && outro.endsWith('@lid')) definir(outro, 'pn', soNumero(jid));
+}
+function registrarContato(c) {
+  const jid = c.id;
+  if (!individual(jid)) return;
+  definir(jid, 'agenda', c.name);
+  definir(jid, 'wpp', c.notify);
+  definir(jid, 'empresa', c.verifiedName);
+  if (jid.endsWith('@s.whatsapp.net')) definir(jid, 'pn', soNumero(jid));
+  ligarPn(jid, c.phoneNumber || c.jid);
+  ligarPn(jid, c.lid);
+}
 
 const limiteInicio = (() => {
   if (!GUARDAR_DESDE) return 0;
@@ -88,7 +122,12 @@ function guardar(m) {
   const texto = textoDe(m);
   if (!texto) return;
   const fromMe = !!m.key.fromMe;
-  if (!fromMe && m.pushName && !nomes[jid]) nomes[jid] = m.pushName;
+  if (jid.endsWith('@s.whatsapp.net')) definir(jid, 'pn', soNumero(jid));
+  ligarPn(jid, m.key.remoteJidAlt || m.key.senderPn);
+  if (!fromMe) {
+    definir(jid, 'wpp', m.pushName);
+    definir(jid, 'empresa', m.verifiedBizName);
+  }
   if (!conversas.has(jid)) conversas.set(jid, new Map());
   const mapa = conversas.get(jid);
   if (mapa.has(m.key.id)) return;
@@ -102,13 +141,21 @@ const fmt = new Intl.DateTimeFormat('pt-BR', {
   hour: '2-digit', minute: '2-digit', hour12: false,
 });
 const quando = (ts) => fmt.format(new Date(ts * 1000)).replace(',', '');
-const nomeDe = (jid) => String(nomes[jid] || jid.split('@')[0]).replace(/[\\/:*?"<>|\n]/g, '_').trim();
+const fmtTel = (n) => (n && /^55\d{10,11}$/.test(n)
+  ? `+55 ${n.slice(2, 4)} ${n.slice(4, -4)}-${n.slice(-4)}` : n ? `+${n}` : '');
+function nomeLegivel(jid) {
+  const c = contatos[jid] || {};
+  return c.agenda || c.wpp || c.empresa || c.antigo || fmtTel(c.pn) || soNumero(jid);
+}
+const nomeDe = (jid) => String(nomeLegivel(jid)).replace(/[\\/:*?"<>|\n]/g, '_').trim();
+const etiquetasDe = (jid) => (contatos[jid]?.etiquetas || []).map((id) => etiquetas[id]).filter(Boolean);
 
 function gravar() {
   if (!pendenteGravar) return;
   pendenteGravar = false;
   if (buffer.length) fs.appendFileSync(ARQ_MSGS, buffer.splice(0).join('\n') + '\n');
-  fs.writeFileSync(ARQ_NOMES, JSON.stringify(nomes, null, 1));
+  fs.writeFileSync(ARQ_CONTATOS, JSON.stringify(contatos, null, 1));
+  fs.writeFileSync(ARQ_ETIQUETAS, JSON.stringify(etiquetas, null, 1));
   // reescreve os .txt no formato da exportação do WhatsApp (Android)
   for (const f of fs.readdirSync(CONVERSAS_DIR)) fs.unlinkSync(path.join(CONVERSAS_DIR, f));
   const usados = new Set();
@@ -209,17 +256,99 @@ function gerarRelatorio(de, ate) {
     e ? erro(new Error(stderr || e.message)) : ok({ saida, resumo: stdout.trim().split('\n').filter((l) => !l.startsWith('Planilha:')).join('\n') })));
 }
 
+// ---------- exportação para análise ----------
+const paraData = (s, fimDoDia) => {
+  const [d, m, a] = s.split('/').map(Number);
+  return (fimDoDia ? new Date(a, m - 1, d, 23, 59, 59) : new Date(a, m - 1, d)).getTime() / 1000;
+};
+
+// tenta descobrir o telefone real de quem só aparece como @lid
+async function resolverLids() {
+  const lm = sock?.signalRepository?.lidMapping;
+  if (!lm?.getPNForLID) return;
+  for (const jid of conversas.keys()) {
+    if (!jid.endsWith('@lid') || contatos[jid]?.pn) continue;
+    try { ligarPn(jid, await lm.getPNForLID(jid)); } catch {}
+  }
+}
+
+async function exportarConversas(de, ate) {
+  await resolverLids();
+  gravar();
+  const ini = paraData(de), fim = paraData(ate, true);
+  // junta a mesma pessoa que aparece como @lid e como telefone
+  const grupos = new Map();
+  for (const [jid, msgs] of conversas) {
+    const chave = contatos[jid]?.pn || soNumero(jid);
+    if (!grupos.has(chave)) grupos.set(chave, { jids: [], msgs: [] });
+    const g = grupos.get(chave);
+    g.jids.push(jid);
+    for (const x of msgs.values()) if (x.ts >= ini && x.ts <= fim) g.msgs.push(x);
+  }
+  const blocos = [];
+  let totalMsgs = 0;
+  for (const [chave, g] of grupos) {
+    if (!g.msgs.length) continue;
+    g.msgs.sort((a, b) => a.ts - b.ts);
+    totalMsgs += g.msgs.length;
+    const junta = (campo) => [...new Set(g.jids.map((j) => contatos[j]?.[campo]).filter(Boolean))].join(' / ');
+    const tags = [...new Set(g.jids.flatMap(etiquetasDe))];
+    const nome = g.jids.map(nomeLegivel).find((n) => !/^\+?\d[\d\s-]+$/.test(n)) || nomeLegivel(g.jids[0]);
+    const tel = fmtTel(junta('pn').split(' / ')[0]) || '(desconhecido)';
+    const cab = [
+      '='.repeat(70),
+      `CONVERSA: ${nome}`,
+      `Nome na agenda: ${junta('agenda') || '-'}`,
+      `Nome no WhatsApp: ${junta('wpp') || '-'}`,
+      ...(junta('empresa') ? [`Empresa (WhatsApp Business): ${junta('empresa')}`] : []),
+      `Telefone: ${tel}`,
+      `Etiquetas: ${tags.join(', ') || '-'}`,
+      `Mensagens no período: ${g.msgs.length}`,
+      '='.repeat(70),
+    ];
+    const linhas = g.msgs.map((x) => `${quando(x.ts)} - ${x.fromMe ? NOME_ATENDENTE : 'Cliente'}: ${x.texto}`);
+    blocos.push({ primeira: g.msgs[0].ts, texto: [...cab, ...linhas, ''].join('\n') });
+  }
+  blocos.sort((a, b) => a.primeira - b.primeira);
+  const topo = [
+    `CONVERSAS DO SUPORTE - ${de} a ${ate}`,
+    `Gerado em ${quando(Date.now() / 1000)}`,
+    `Conversas: ${blocos.length} | Mensagens: ${totalMsgs}`,
+    `"${NOME_ATENDENTE}" = mensagens enviadas pelo número de suporte. "Cliente" = mensagens recebidas.`,
+    '',
+  ].join('\n');
+  const saida = path.join(RELATORIOS_DIR, `conversas_${de.replaceAll('/', '-')}_a_${ate.replaceAll('/', '-')}.txt`);
+  fs.writeFileSync(saida, topo + '\n' + blocos.map((b) => b.texto).join('\n'));
+  return { saida, conversas: blocos.length, mensagens: totalMsgs };
+}
+
 async function tratarComando(m) {
   const texto = (textoDe(m) || '').trim();
-  if (!texto.toLowerCase().startsWith('/relatorio')) return;
+  const cmd = texto.toLowerCase().split(/\s+/)[0];
+  if (!['/relatorio', '/relatório', '/planilha'].includes(cmd)) return;
   const destino = RELATORIO_PARA ? await jidPessoal() : m.key.remoteJid;
   const p = periodo(texto.split(/\s+/).slice(1));
   if (!p) {
-    await sock.sendMessage(destino, { text: 'Não entendi o período. Exemplos:\n/relatorio\n/relatorio 20/10 a 19/11\n/relatorio outubro\n/relatorio mes passado\n/relatorio semana\n/relatorio hoje' });
+    await sock.sendMessage(destino, { text: 'Não entendi o período. Exemplos (troque /relatorio por /planilha para a planilha automática):\n/relatorio\n/relatorio 20/10 a 19/11\n/relatorio outubro\n/relatorio mes passado\n/relatorio semana\n/relatorio hoje' });
     return;
   }
   const [de, ate] = p;
-  console.log(`[relatório] pedido ${de} a ${ate}`);
+  console.log(`[${cmd}] pedido ${de} a ${ate}`);
+  if (cmd !== '/planilha') {
+    try {
+      const r = await exportarConversas(de, ate);
+      await sock.sendMessage(destino, {
+        text: `Conversas de ${de} a ${ate}: ${r.conversas} conversas, ${r.mensagens} mensagens.\nManda o arquivo pro Claude interpretar os chamados.`,
+      });
+      await sock.sendMessage(destino, {
+        document: fs.readFileSync(r.saida), fileName: path.basename(r.saida), mimetype: 'text/plain',
+      });
+    } catch (e) {
+      console.error('[relatório] erro', e);
+      await sock.sendMessage(destino, { text: `Erro ao gerar o arquivo:\n${String(e.message).slice(0, 500)}` });
+    }
+    return;
+  }
   try {
     const { saida, resumo } = await gerarRelatorio(de, ate);
     await sock.sendMessage(destino, { text: resumo });
@@ -271,6 +400,14 @@ async function conectar() {
       jaConectou = true;
       falhasSeguidas = 0;
       console.log('✅ Conectado. Recebendo o histórico (pode levar alguns minutos)...');
+      // pede de novo contatos/etiquetas (nomes da agenda e etiquetas do Business)
+      setTimeout(async () => {
+        try {
+          await sock.resyncAppState?.(['critical_block', 'critical_unblock_low', 'regular_high', 'regular_low', 'regular'], true);
+          console.log(`[contatos] sincronizados. Etiquetas: ${Object.values(etiquetas).join(', ') || 'nenhuma'}`);
+        } catch (e) { console.log('[contatos] não deu para sincronizar agora:', e.message); }
+        resolverLids();
+      }, 15_000);
       if (RELATORIO_PARA) jidPessoal().then((j) => console.log(`Relatórios vão para ${j}`));
       else console.log('RELATORIO_PARA não definido: relatórios vão para a conversa consigo mesmo.');
     }
@@ -292,15 +429,41 @@ async function conectar() {
   });
 
   sock.ev.on('messaging-history.set', ({ chats = [], contacts = [], messages = [], progress, isLatest }) => {
-    for (const c of contacts) if (individual(c.id) && (c.name || c.notify)) nomes[c.id] = c.name || c.notify;
-    for (const c of chats) if (individual(c.id) && c.name) nomes[c.id] = c.name;
+    for (const c of contacts) registrarContato(c);
+    for (const c of chats) {
+      if (!individual(c.id)) continue;
+      definir(c.id, 'agenda', c.name);
+      ligarPn(c.id, c.pnJid || c.phoneNumber);
+      ligarPn(c.id, c.lidJid);
+    }
     for (const m of messages) guardar(m);
     pendenteGravar = true;
     console.log(`[histórico] +${messages.length} msgs  progresso: ${progress ?? '?'}%${isLatest ? '  (último lote)' : ''}`);
   });
 
-  sock.ev.on('contacts.upsert', (cs) => {
-    for (const c of cs) if (individual(c.id) && (c.name || c.notify)) nomes[c.id] = c.name || c.notify;
+  sock.ev.on('contacts.upsert', (cs) => cs.forEach(registrarContato));
+  sock.ev.on('contacts.update', (cs) => cs.forEach(registrarContato));
+
+  // telefone real de contatos que aparecem como @lid
+  sock.ev.on('lid-mapping.update', (d) => {
+    for (const x of [].concat(d?.mappings || d || [])) {
+      const lid = x.lid || x.lidJid, pn = x.pn || x.pnJid;
+      if (lid && pn) ligarPn(String(lid).includes('@') ? lid : `${lid}@lid`, String(pn).includes('@') ? pn : `${pn}@s.whatsapp.net`);
+    }
+  });
+
+  // etiquetas do WhatsApp Business
+  sock.ev.on('labels.edit', (l) => {
+    if (!l?.id) return;
+    if (l.deleted) delete etiquetas[l.id]; else etiquetas[l.id] = l.name;
+    pendenteGravar = true;
+  });
+  sock.ev.on('labels.association', ({ association, type }) => {
+    if (association?.type !== 'chat' || !association.chatId) return;
+    const lista = new Set(ct(association.chatId).etiquetas || []);
+    if (type === 'remove') lista.delete(association.labelId); else lista.add(association.labelId);
+    ct(association.chatId).etiquetas = [...lista];
+    pendenteGravar = true;
   });
 
   sock.ev.on('messages.upsert', async ({ messages, type }) => {

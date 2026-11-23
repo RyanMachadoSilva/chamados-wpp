@@ -21,7 +21,9 @@ Do seu WhatsApp pessoal (`RELATORIO_PARA`), mande para o número do suporte, ou 
 | `/relatorio mes` / `/relatorio mes passado` | mês atual / anterior |
 | `/relatorio semana` / `hoje` / `ontem` | últimos 7 dias / hoje / ontem |
 
-O bot manda o resumo e a planilha (.xlsx) no seu pessoal. As mensagens entre o pessoal e o suporte não contam como chamado.
+O bot manda no seu pessoal um arquivo .txt com as conversas do período, uma por cliente, com nome da agenda, nome no WhatsApp, telefone e etiquetas. Esse arquivo é para mandar ao Claude, que interpreta os chamados, calcula as horas e monta os apontamentos.
+
+Para a planilha automática antiga, troque `/relatorio` por `/planilha` (mesmos formatos de período). As mensagens entre o pessoal e o suporte não contam como chamado.
 
 ## Regras da contagem
 
