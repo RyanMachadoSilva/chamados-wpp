@@ -19,6 +19,16 @@ import { execFile } from 'node:child_process';
 
 process.env.TZ ||= 'America/Sao_Paulo';
 
+// esconde o ruído da biblioteca de criptografia do WhatsApp ("Closing session: SessionEntry {...}")
+for (const nivel of ['log', 'info', 'warn']) {
+  const original = console[nivel].bind(console);
+  console[nivel] = (...args) => {
+    const t = typeof args[0] === 'string' ? args[0] : '';
+    if (/^(Closing session|Closing open session|Removing old closed session|Session already closed|Decrypted message with closed session|Migrating session)/.test(t)) return;
+    original(...args);
+  };
+}
+
 const makeWASocket = baileys.makeWASocket ?? baileys.default;
 const { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers } = baileys;
 
